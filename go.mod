@@ -1,4 +1,4 @@
-module github.com/AngelThump/muxer
+module github.com/AngelThump/cache-warmer
 
 go 1.19
 
