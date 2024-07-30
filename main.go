@@ -109,8 +109,6 @@ func save(stream Stream, prevM3u8Bytes []byte) []byte {
 		return prevM3u8Bytes
 	}
 
-	//log.Printf("[%s] Saving HLS", path)
-
 	//Not the same, save new m3u8
 	//replace live path name as it is not used in redis
 	regex := regexp.MustCompile(`live/`)
