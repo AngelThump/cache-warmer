@@ -105,7 +105,7 @@ func save(stream Stream, prevM3u8Bytes []byte) []byte {
 	}
 
 	if bytes.Equal(prevM3u8Bytes, m3u8Bytes) {
-		log.Printf("[%s] M3u8 is the same. Ignore", path)
+		//log.Printf("[%s] M3u8 is the same. Ignore", path)
 		return prevM3u8Bytes
 	}
 
@@ -114,7 +114,6 @@ func save(stream Stream, prevM3u8Bytes []byte) []byte {
 	regex := regexp.MustCompile(`live/`)
 	streamPath := regex.ReplaceAllString(path, "hls/")
 
-	go sendM3u8(m3u8Bytes, streamPath)
 	pl, err := parseM3u8(m3u8Bytes)
 	if err != nil {
 		return prevM3u8Bytes
@@ -135,7 +134,10 @@ func save(stream Stream, prevM3u8Bytes []byte) []byte {
 			}
 		} else {
 			seg := pl.Segments[len(pl.Segments)-1]
-			go getAndSendSegment(seg, streamPath, source)
+			go func() {
+				getAndSendSegment(seg, streamPath, source)
+				sendM3u8(m3u8Bytes, streamPath)
+			}()
 		}
 	}
 	return m3u8Bytes
