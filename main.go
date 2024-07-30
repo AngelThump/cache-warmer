@@ -5,6 +5,7 @@ import (
 	"errors"
 	"log"
 	"regexp"
+	"slices"
 	"sync"
 	"time"
 
@@ -12,7 +13,7 @@ import (
 	"github.com/go-resty/resty/v2"
 )
 
-var prevM3u8Bytes []byte
+var currentStreams []Stream
 
 func main() {
 	cfgPath, err := ParseFlags()
@@ -33,60 +34,89 @@ func main() {
 }
 
 func getStreams() {
-	streams := Find().Items
+	streams := Find()
 	if streams == nil {
-		time.AfterFunc(300*time.Millisecond, func() {
+		time.AfterFunc(1000*time.Millisecond, func() {
 			getStreams()
 		})
 		return
 	}
 
-	var wg sync.WaitGroup
 	for _, stream := range streams {
-		wg.Add(1)
-		go func(path string) {
-			defer wg.Done()
-			save(path)
-		}(stream.Path)
-	}
-	wg.Wait()
+		//Skip if already monitoring
+		exists := slices.ContainsFunc(currentStreams, func(n Stream) bool {
+			return n.Path == stream.Path
+		})
+		if exists {
+			continue
+		}
 
-	time.AfterFunc(300*time.Millisecond, func() {
+		currentStreams = append(currentStreams, stream)
+		go Check(stream, nil)
+	}
+
+	//Delete if not streaming anymore
+	for i, existingStream := range currentStreams {
+		exists := slices.ContainsFunc(streams, func(n Stream) bool {
+			return n.Path == existingStream.Path
+		})
+		if exists {
+			continue
+		}
+		currentStreams = slices.Delete(currentStreams, i, i+1)
+	}
+
+	time.AfterFunc(1000*time.Millisecond, func() {
 		getStreams()
 	})
 }
 
-func save(path string) {
+func Check(stream Stream, prevM3u8Bytes []byte) {
+	streaming := slices.ContainsFunc(currentStreams, func(n Stream) bool {
+		return n.Path == stream.Path
+	})
+	//Quit if no longer monitoring
+	if !streaming {
+		return
+	}
+
+	prevM3u8Bytes = save(stream, prevM3u8Bytes)
+
+	time.AfterFunc(300*time.Millisecond, func() {
+		Check(stream, prevM3u8Bytes)
+	})
+}
+
+func save(stream Stream, prevM3u8Bytes []byte) []byte {
+	path := stream.Path
 	source := "https://" + Config.Ingest.Username + ":" + Config.Ingest.Password + "@" + Config.Ingest.Hostname + "/hls/" + path
 
 	m3u8Bytes, err := get(source + "/stream.m3u8")
 	if err != nil {
-		return
+		return prevM3u8Bytes
 	}
 
 	if bytes.Equal(prevM3u8Bytes, m3u8Bytes) {
 		log.Printf("[%s] M3u8 is the same. Ignore", path)
-		return
+		return prevM3u8Bytes
 	}
 
 	log.Printf("[%s] Saving HLS", path)
 
 	//Not the same, save new m3u8
-	prevM3u8Bytes = m3u8Bytes
-
 	//replace live path name as it is not used in redis
 	regex := regexp.MustCompile(`live/`)
-	stream := regex.ReplaceAllString(path, "hls/")
+	streamPath := regex.ReplaceAllString(path, "hls/")
 
-	go sendM3u8(m3u8Bytes, stream)
+	go sendM3u8(m3u8Bytes, streamPath)
 	pl, err := parseM3u8(m3u8Bytes)
 	if err != nil {
-		return
+		return prevM3u8Bytes
 	}
 
 	switch pl := pl.(type) {
 	case *playlist.Media:
-		go getAndSendInitMp4(pl.Map.URI, stream, source)
+		go getAndSendInitMp4(pl.Map.URI, streamPath, source)
 
 		for i := len(pl.Segments) - 1; i >= 0; i-- {
 			seg := pl.Segments[i]
@@ -95,10 +125,10 @@ func save(path string) {
 			}
 			go func(seg *playlist.MediaSegment, baseUrl string, source string) {
 				getAndSendSegment(seg, baseUrl, source)
-			}(seg, stream, source)
+			}(seg, streamPath, source)
 		}
 	}
-
+	return m3u8Bytes
 }
 func getAndSendInitMp4(initMp4 string, path string, source string) error {
 	//log.Printf("Saving %s", initMp4)
@@ -132,7 +162,7 @@ func get(url string) ([]byte, error) {
 
 	statusCode := resp.StatusCode()
 	if statusCode != 200 {
-		log.Printf("Get Segment: Unexpected status code, got %d instead", statusCode)
+		log.Printf("Get %s: Unexpected status code, got %d instead", url, statusCode)
 		return nil, errors.New(string(resp.Body()))
 	}
 

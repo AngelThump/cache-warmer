@@ -8,13 +8,15 @@ import (
 	"github.com/go-resty/resty/v2"
 )
 
-type Stream struct {
-	Items []struct {
-		Path string `json:"path"`
-	} `json:"items"`
+type Response struct {
+	Items []Stream `json:"items"`
 }
 
-func Find() *Stream {
+type Stream struct {
+	Path string `json:"path"`
+}
+
+func Find() []Stream {
 	client := resty.New()
 	resp, _ := client.R().
 		SetHeader("Authorization", "Basic "+base64.StdEncoding.EncodeToString([]byte(Config.Ingest.Username+":"+Config.Ingest.Password))).
@@ -26,12 +28,12 @@ func Find() *Stream {
 		return nil
 	}
 
-	var streams Stream
+	var streams Response
 	err := json.Unmarshal(resp.Body(), &streams)
 	if err != nil {
 		log.Printf("Unmarshal Error %v", err)
 		return nil
 	}
 
-	return &streams
+	return streams.Items
 }
