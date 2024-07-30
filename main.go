@@ -89,7 +89,15 @@ func Check(stream Stream, prevM3u8Bytes []byte) {
 
 func save(stream Stream, prevM3u8Bytes []byte) []byte {
 	path := stream.Path
-	source := "https://" + Config.Ingest.Username + ":" + Config.Ingest.Password + "@" + Config.Ingest.Hostname + "/hls/" + path
+
+	var protocol string
+	if Config.Ingest.UseHttps {
+		protocol = "https://"
+	} else {
+		protocol = "http://"
+	}
+
+	source := protocol + Config.Ingest.Username + ":" + Config.Ingest.Password + "@" + Config.Ingest.Hostname + "/hls/" + path
 
 	m3u8Bytes, err := get(source + "/stream.m3u8")
 	if err != nil {
@@ -101,7 +109,7 @@ func save(stream Stream, prevM3u8Bytes []byte) []byte {
 		return prevM3u8Bytes
 	}
 
-	log.Printf("[%s] Saving HLS", path)
+	//log.Printf("[%s] Saving HLS", path)
 
 	//Not the same, save new m3u8
 	//replace live path name as it is not used in redis
@@ -118,14 +126,18 @@ func save(stream Stream, prevM3u8Bytes []byte) []byte {
 	case *playlist.Media:
 		go getAndSendInitMp4(pl.Map.URI, streamPath, source)
 
-		for i := len(pl.Segments) - 1; i >= 0; i-- {
-			seg := pl.Segments[i]
-			if seg == nil {
-				continue
+		if prevM3u8Bytes == nil {
+			for _, seg := range pl.Segments {
+				if seg == nil {
+					continue
+				}
+				go func(seg *playlist.MediaSegment, streamPath string, source string) {
+					getAndSendSegment(seg, streamPath, source)
+				}(seg, streamPath, source)
 			}
-			go func(seg *playlist.MediaSegment, baseUrl string, source string) {
-				getAndSendSegment(seg, baseUrl, source)
-			}(seg, streamPath, source)
+		} else {
+			seg := pl.Segments[len(pl.Segments)-1]
+			go getAndSendSegment(seg, streamPath, source)
 		}
 	}
 	return m3u8Bytes
@@ -194,7 +206,7 @@ func sendM3u8(m3u8Bytes []byte, path string) {
 }
 
 func getAndSendSegment(seg *playlist.MediaSegment, path string, source string) error {
-	//log.Printf("Saving %s", seg.URI)
+	log.Printf("[%s] Saving %s", path, seg.URI)
 	client := resty.New()
 
 	segmentBytes, err := get(source + "/" + seg.URI)

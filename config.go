@@ -14,6 +14,7 @@ type ConfigStruct struct {
 		AuthKey  string `json:"authKey"`
 	}
 	Ingest struct {
+		UseHttps bool   `json:"useHttps"`
 		Hostname string `json:"hostname"`
 		Username string `json:"username"`
 		Password string `json:"password"`
