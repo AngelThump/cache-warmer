@@ -121,9 +121,7 @@ func saveVideo(prevM3u8Bytes []byte, source string, path string) []byte {
 
 	switch pl := pl.(type) {
 	case *playlist.Media:
-		go retryOperation(3, func() error {
-			return getAndSendInitMp4(pl.Map.URI, streamPath, source)
-		})
+		getAndSendInitMp4(pl.Map.URI, streamPath, source)
 
 		if prevM3u8Bytes == nil {
 			for _, seg := range pl.Segments {
@@ -131,17 +129,14 @@ func saveVideo(prevM3u8Bytes []byte, source string, path string) []byte {
 					continue
 				}
 				go func(seg *playlist.MediaSegment, streamPath string, source string) {
-					retryOperation(3, func() error {
-						return getAndSendSegment(seg, streamPath, source)
-					})
+					getAndSendSegment(seg, streamPath, source)
 				}(seg, streamPath, source)
 			}
 		} else {
 			seg := pl.Segments[len(pl.Segments)-1]
 			go func() {
-				retryOperation(3, func() error {
-					return getAndSendSegment(seg, streamPath, source)
-				})
+				getAndSendSegment(seg, streamPath, source)
+
 				sendM3u8(m3u8Bytes, streamPath, endUrl)
 			}()
 		}
@@ -173,9 +168,7 @@ func saveAudio(prevM3u8Bytes []byte, source string, path string) []byte {
 
 	switch pl := pl.(type) {
 	case *playlist.Media:
-		go retryOperation(3, func() error {
-			return getAndSendInitMp4(pl.Map.URI, streamPath, source)
-		})
+		getAndSendInitMp4(pl.Map.URI, streamPath, source)
 
 		if prevM3u8Bytes == nil {
 			for _, seg := range pl.Segments {
@@ -183,17 +176,14 @@ func saveAudio(prevM3u8Bytes []byte, source string, path string) []byte {
 					continue
 				}
 				go func(seg *playlist.MediaSegment, streamPath string, source string) {
-					retryOperation(3, func() error {
-						return getAndSendSegment(seg, streamPath, source)
-					})
+					getAndSendSegment(seg, streamPath, source)
 				}(seg, streamPath, source)
 			}
 		} else {
 			seg := pl.Segments[len(pl.Segments)-1]
 			go func() {
-				retryOperation(3, func() error {
-					return getAndSendSegment(seg, streamPath, source)
-				})
+				getAndSendSegment(seg, streamPath, source)
+
 				sendM3u8(m3u8Bytes, streamPath, endUrl)
 			}()
 		}
