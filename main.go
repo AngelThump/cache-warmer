@@ -52,26 +52,23 @@ func getStreams() {
 		}
 
 		currentStreams = append(currentStreams, stream)
-		go Check(stream, nil)
+		go Check(stream, nil, nil)
 	}
 
 	//Delete if not streaming anymore
-	for i, existingStream := range currentStreams {
-		exists := slices.ContainsFunc(streams, func(n Stream) bool {
-			return n.Path == existingStream.Path
+	currentStreams = slices.DeleteFunc(currentStreams, func(n Stream) bool {
+		exists := slices.ContainsFunc(streams, func(b Stream) bool {
+			return n.Path == b.Path
 		})
-		if exists {
-			continue
-		}
-		currentStreams = slices.Delete(currentStreams, i, i+1)
-	}
+		return !exists
+	})
 
 	time.AfterFunc(1000*time.Millisecond, func() {
 		getStreams()
 	})
 }
 
-func Check(stream Stream, prevM3u8Bytes []byte) {
+func Check(stream Stream, prevVideoM3u8Bytes []byte, prevAudioM3u8Bytes []byte) {
 	streaming := slices.ContainsFunc(currentStreams, func(n Stream) bool {
 		return n.Path == stream.Path
 	})
@@ -80,14 +77,6 @@ func Check(stream Stream, prevM3u8Bytes []byte) {
 		return
 	}
 
-	prevM3u8Bytes = save(stream, prevM3u8Bytes)
-
-	time.AfterFunc(300*time.Millisecond, func() {
-		Check(stream, prevM3u8Bytes)
-	})
-}
-
-func save(stream Stream, prevM3u8Bytes []byte) []byte {
 	path := stream.Path
 
 	var protocol string
@@ -99,7 +88,18 @@ func save(stream Stream, prevM3u8Bytes []byte) []byte {
 
 	source := protocol + Config.Ingest.Username + ":" + Config.Ingest.Password + "@" + Config.Ingest.Hostname + "/hls/" + path
 
-	m3u8Bytes, err := get(source + "/stream.m3u8")
+	go getAndSendIndexM3u8(path, source)
+	prevVideoM3u8Bytes = saveVideo(prevVideoM3u8Bytes, source, path)
+	prevAudioM3u8Bytes = saveAudio(prevAudioM3u8Bytes, source, path)
+
+	time.AfterFunc(300*time.Millisecond, func() {
+		Check(stream, prevVideoM3u8Bytes, prevAudioM3u8Bytes)
+	})
+}
+
+func saveVideo(prevM3u8Bytes []byte, source string, path string) []byte {
+	endUrl := "video1_stream.m3u8"
+	m3u8Bytes, err := get(source + "/" + endUrl)
 	if err != nil {
 		return prevM3u8Bytes
 	}
@@ -121,7 +121,9 @@ func save(stream Stream, prevM3u8Bytes []byte) []byte {
 
 	switch pl := pl.(type) {
 	case *playlist.Media:
-		go getAndSendInitMp4(pl.Map.URI, streamPath, source)
+		go retryOperation(3, func() error {
+			return getAndSendInitMp4(pl.Map.URI, streamPath, source)
+		})
 
 		if prevM3u8Bytes == nil {
 			for _, seg := range pl.Segments {
@@ -129,19 +131,76 @@ func save(stream Stream, prevM3u8Bytes []byte) []byte {
 					continue
 				}
 				go func(seg *playlist.MediaSegment, streamPath string, source string) {
-					getAndSendSegment(seg, streamPath, source)
+					retryOperation(3, func() error {
+						return getAndSendSegment(seg, streamPath, source)
+					})
 				}(seg, streamPath, source)
 			}
 		} else {
 			seg := pl.Segments[len(pl.Segments)-1]
 			go func() {
-				getAndSendSegment(seg, streamPath, source)
-				sendM3u8(m3u8Bytes, streamPath)
+				retryOperation(3, func() error {
+					return getAndSendSegment(seg, streamPath, source)
+				})
+				sendM3u8(m3u8Bytes, streamPath, endUrl)
 			}()
 		}
 	}
 	return m3u8Bytes
 }
+
+func saveAudio(prevM3u8Bytes []byte, source string, path string) []byte {
+	endUrl := "audio2_stream.m3u8"
+	m3u8Bytes, err := get(source + "/" + endUrl)
+	if err != nil {
+		return prevM3u8Bytes
+	}
+
+	if bytes.Equal(prevM3u8Bytes, m3u8Bytes) {
+		//log.Printf("[%s] M3u8 is the same. Ignore", path)
+		return prevM3u8Bytes
+	}
+
+	//Not the same, save new m3u8
+	//replace live path name as it is not used in redis
+	regex := regexp.MustCompile(`live/`)
+	streamPath := regex.ReplaceAllString(path, "hls/")
+
+	pl, err := parseM3u8(m3u8Bytes)
+	if err != nil {
+		return prevM3u8Bytes
+	}
+
+	switch pl := pl.(type) {
+	case *playlist.Media:
+		go retryOperation(3, func() error {
+			return getAndSendInitMp4(pl.Map.URI, streamPath, source)
+		})
+
+		if prevM3u8Bytes == nil {
+			for _, seg := range pl.Segments {
+				if seg == nil {
+					continue
+				}
+				go func(seg *playlist.MediaSegment, streamPath string, source string) {
+					retryOperation(3, func() error {
+						return getAndSendSegment(seg, streamPath, source)
+					})
+				}(seg, streamPath, source)
+			}
+		} else {
+			seg := pl.Segments[len(pl.Segments)-1]
+			go func() {
+				retryOperation(3, func() error {
+					return getAndSendSegment(seg, streamPath, source)
+				})
+				sendM3u8(m3u8Bytes, streamPath, endUrl)
+			}()
+		}
+	}
+	return m3u8Bytes
+}
+
 func getAndSendInitMp4(initMp4 string, path string, source string) error {
 	//log.Printf("Saving %s", initMp4)
 	client := resty.New()
@@ -160,7 +219,34 @@ func getAndSendInitMp4(initMp4 string, path string, source string) error {
 
 	statusCode := resp.StatusCode()
 	if statusCode != 200 {
-		log.Printf("Send Segment: Unexpected status code, got %d instead", statusCode)
+		log.Printf("Send Init Mp4: Unexpected status code, got %d instead", statusCode)
+		return errors.New(string(resp.Body()))
+	}
+
+	return nil
+}
+
+func getAndSendIndexM3u8(path string, source string) error {
+	//log.Println("Saving index m3u8")
+	regex := regexp.MustCompile(`live/`)
+	streamPath := regex.ReplaceAllString(path, "hls/")
+	client := resty.New()
+
+	m3u8Bytes, err := get(source + "/index.m3u8")
+	if err != nil {
+		return err
+	}
+
+	redisBaseUrl := "http://" + Config.Redis.Hostname + "/" + streamPath
+
+	resp, _ := client.R().
+		SetHeader("Authorization", "Bearer "+Config.Ingest.AuthKey).
+		SetBody(m3u8Bytes).
+		Post(redisBaseUrl + "/index.m3u8")
+
+	statusCode := resp.StatusCode()
+	if statusCode != 200 {
+		log.Printf("Send Index M3u8: Unexpected status code, got %d instead", statusCode)
 		return errors.New(string(resp.Body()))
 	}
 
@@ -190,14 +276,14 @@ func parseM3u8(m3u8Bytes []byte) (playlist.Playlist, error) {
 	return pl, nil
 }
 
-func sendM3u8(m3u8Bytes []byte, path string) {
+func sendM3u8(m3u8Bytes []byte, path string, endUrl string) {
 	client := resty.New()
 	redisBaseUrl := "http://" + Config.Redis.Hostname + "/" + path
 
 	resp, _ := client.R().
 		SetHeader("Authorization", "Bearer "+Config.Ingest.AuthKey).
 		SetBody(m3u8Bytes).
-		Post(redisBaseUrl + "/index.m3u8")
+		Post(redisBaseUrl + "/" + endUrl)
 	statusCode := resp.StatusCode()
 	if statusCode != 200 {
 		log.Printf("Send M3u8: Unexpected status code, got %d instead", statusCode)
@@ -228,4 +314,18 @@ func getAndSendSegment(seg *playlist.MediaSegment, path string, source string) e
 	}
 
 	return nil
+}
+
+func retryOperation(maxRetries int, operation func() error) {
+	for i := 0; i < maxRetries; i++ {
+		err := operation()
+		if err == nil {
+			return // Operation succeeded
+		}
+		if i < maxRetries-1 {
+			// Optional: Add a delay between retries
+			time.Sleep(20 * time.Millisecond)
+		}
+	}
+	return
 }

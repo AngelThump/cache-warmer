@@ -39,7 +39,6 @@ func Find() []Stream {
 	var streams Response
 	err := json.Unmarshal(resp.Body(), &streams)
 	if err != nil {
-		log.Printf("Unmarshal Error %v", err)
 		return nil
 	}
 
